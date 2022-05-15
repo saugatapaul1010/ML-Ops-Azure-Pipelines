@@ -1,0 +1,1 @@
+az ml model deploy -g $(ml.resourceGroup) -w $(ml.workspace) -n $(aks_service_name) -f metadata/model.json --dc aksDeploymentConfig.yml --ic inferenceConfig.yml --ct $(aks.clusterName) --description "TicketPriority Classifier deployed in AKS" --overwrite

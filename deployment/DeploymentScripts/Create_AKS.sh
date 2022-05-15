@@ -1,0 +1,1 @@
+az ml computetarget create aks -g $(ml.resourceGroup) -w $(ml.workspace)  -n $(aks.clusterName) -s $(aks.vmSize) -a $(aks.agentCount) --cluster-purpose $(ml.clusterPurpose)

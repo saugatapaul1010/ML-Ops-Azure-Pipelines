@@ -1,0 +1,1 @@
+az extension update -n azure-cli-ml

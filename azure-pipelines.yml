@@ -1,0 +1,239 @@
+variables:
+- name: ml.computeIdleSecs
+  value: 300
+- name: ml.computeMaxNodes
+  value: 2
+- name: ml.computeMinNodes
+  value: 0
+- name: ml.computeName
+  value: iriscompute
+- name: ml.computeVMSize
+  value: STANDARD_DS2_V2
+- name: ml.region
+  value: centralindia
+- name: ml.resourceGroup
+  value: SyntbotsAI-RnD-MLOps
+- name: ml.workspace
+  value: MLOps_WS01
+- name: ml.experimentName
+  value: iris
+- name: system.debug
+  value: true
+- name: aks.clusterName
+  value: aksiriscompute
+- name: aks.vmSize
+  value: STANDARD_DS2_V2
+- name: aks_service_name
+  value: iris-end
+- name: aks.aksLocation
+  value: centralindia
+- name: aks.clusterPurpose
+  value: DevTest
+- name: aks.agentCount
+  value: 3
+
+  
+
+
+stages:
+- stage: "Infra_Setup_Stage"
+  jobs:
+  - job: "Infra_Setup_Job"
+    displayName: MLOpsAgent - Infra_Setup_Stage
+    cancelTimeoutInMinutes: 60
+    pool:
+      name: MLOpsAgent
+      vmImage: ubuntu-18.04
+    steps:
+    - checkout: self
+
+    - task: Bash@3
+      displayName: Install Python Dependencies
+      inputs:
+        filePath: environment_setup/install-requirements.sh
+
+    - task: AzureCLI@2
+      displayName: Azure CLI ML Installation
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az extension add -n azure-cli-ml
+
+    - task: AzureCLI@2
+      displayName: Create/Use Workspace
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az ml workspace create -g $(ml.resourceGroup) -w $(ml.workspace)
+          -l $(ml.region) --exist-ok --yes
+
+    - task: AzureCLI@2
+      displayName: Create/Use Compute Target
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az ml computetarget create amlcompute -g $(ml.resourceGroup) -w
+          $(ml.workspace) -n $(ml.computeName) -s $(ml.computeVMSize) --min-nodes $(ml.computeMinNodes)
+          --max-nodes $(ml.computeMaxNodes) --idle-seconds-before-scaledown $(ml.computeIdleSecs)
+          --location $(ml.region)
+
+
+- stage: "Build_Stage"
+  jobs:
+  - job: "Build_Job"
+    displayName: MLOpsAgent - Build_Stage
+    cancelTimeoutInMinutes: 60
+    pool:
+      name: MLOpsAgent
+      vmImage: ubuntu-18.04
+    steps:
+    - checkout: self
+
+    - task: Bash@3
+      displayName: Install Python Dependencies
+      inputs:
+        filePath: environment_setup/install-requirements.sh
+
+    - task: AzureCLI@2
+      displayName: Azure CLI ML Installation
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az extension add -n azure-cli-ml
+
+    - task: Bash@3
+      displayName: Create Metadata/Model/Artifcats Folders
+      inputs:
+        targetType: inline
+        script: mkdir metadata && mkdir models
+        
+
+    - task: AzureCLI@2
+      displayName: Training Stage
+      timeoutInMinutes: 60
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az ml run submit-script -g $(ml.resourceGroup) -w $(ml.workspace)
+          -e $(ml.experimentName) --ct $(ml.computeName) -c iris_training --source-directory
+          . --path environment_setup -t ./metadata/run.json training.py --container_name
+          irisdata --input_csv Iris.csv --model_path ./models/iris_model.pkl
+          --artifact_loc ./output/models/ --dataset_name iris_ds --dataset_desc "IRIS_Data_Set" --training_columns "SepalLengthCm,SepalWidthCm,PetalLengthCm,PetalWidthCm"
+          --target_column 'Species' --train_size 0.75 --tag_name iris_classification_tag --balancing_technique_technique SMOTE 
+        addSpnToEnvironment: true
+        useGlobalConfig: true
+
+    - task: AzureCLI@2
+      displayName: Register Model in Model Registry
+      inputs:
+        connectedServiceNameARM: 7e03a668-298d-4fab-bb8d-49cccb324797
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: az ml model register -g $(ml.resourceGroup) -w $(ml.workspace)
+          -n IRIS --asset-path output/models/ -d "IRIS_Decision_Tree_Classifier" --tag
+          "model"="Decision Tree" --model-framework Custom -f ./metadata/run.json -t
+          metadata/model.json
+
+    - task: CopyFiles@2
+      displayName: 'Copy Files to: $(Build.ArtifactStagingDirectory)'
+      inputs:
+        SourceFolder: $(Build.SourcesDirectory)
+        Contents: >-
+          **metadata/*
+
+          **/environment_setup/*
+
+          **/deployment/*
+
+          **/inference/*
+
+          **/tests/smoke/*
+
+          **/outputs/prediction.csv
+        TargetFolder: $(Build.ArtifactStagingDirectory)
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Pipeline Artifact
+      inputs:
+        artifactName: IRISClassifierArtifacts
+    
+    # - task: PublishPipelineArtifact@1
+    #   displayName: Publish Pipeline Artifact
+    #   inputs:
+    #     targetPath: $(Build.ArtifactStagingDirectory)
+    #     artifactName: IRISClassifierArtifacts
+    #     publishLocation: pipeline
+    
+  
+         
+
+- stage: "Release_Stage"
+  dependsOn: "Build_Stage" 
+  jobs:
+  - job: "Release_Job"
+    displayName: MLOpsAgent - Release_Stage
+    cancelTimeoutInMinutes: 60
+    pool:
+      name: MLOpsAgent
+      vmImage: ubuntu-18.04
+    steps:
+    - checkout: self
+
+    - task: Bash@3
+      displayName: 'Install Dependencies'
+      inputs:
+        targetType: filePath
+        filePath: '/home/azureuser/AssistedMLOPSAgent/myagent/_work/r1/a/_Assisted_MLOPS/IRISClassifierArtifacts/a/environment_setup/install-requirements.sh'
+
+    - task: AzureCLI@1
+      displayName: 'Install Azure CLI ML Extension'
+      inputs:
+        azureSubscription: 'Azure subscription 1 (b53cd405-74a5-4714-9549-88af4dc84f66)'
+        scriptLocation: inlineScript
+        inlineScript: 'az extension add -n azure-cli-ml'
+
+    # - task: AzureCLI@2
+    #   displayName: 'Update CLI'
+    #   inputs:
+    #     azureSubscription: 'Azure subscription 1 (b53cd405-74a5-4714-9549-88af4dc84f66)'
+    #     scriptType: bash
+    #     scriptLocation: inlineScript
+    #     inlineScript: 'az extension update -n azure-cli-ml'
+
+    - task: AzureCLI@2
+      displayName: 'Create AKS'
+      inputs:
+        azureSubscription: 'Azure subscription 1 (b53cd405-74a5-4714-9549-88af4dc84f66)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: 'az ml computetarget create aks -g $(ml.resourceGroup) -w $(ml.workspace)  -n $(aks.clusterName) -s $(aks.vmSize) -a $(aks.agentCount) --cluster-purpose $(aks.clusterPurpose) --location $(aks.aksLocation)'
+
+    - task: AzureCLI@1
+      displayName: 'Deploy ML Model To AKS'
+      inputs:
+        azureSubscription: 'Azure subscription 1 (b53cd405-74a5-4714-9549-88af4dc84f66)'
+        scriptLocation: inlineScript
+        inlineScript: 'az ml model deploy -g $(ml.resourceGroup) -w $(ml.workspace) -n $(aks_service_name) -f metadata/model.json --dc deployment/aksDeploymentConfig.yml --ic deployment/inferenceConfig.yml --ct $(aks.clusterName) --description "Iris Classifier Model Deployed to AKS" --overwrite'
+        workingDirectory: '/home/azureuser/AssistedMLOPSAgent/myagent/_work/r1/a/_Assisted_MLOPS/IRISClassifierArtifacts/a/'
+      condition: always()
+
+    - task: AzureCLI@2
+      displayName: 'Run Integration Test-AKS'
+      inputs:
+        azureSubscription: 'Azure subscription 1 (b53cd405-74a5-4714-9549-88af4dc84f66)'
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: 'pytest smoke_tests.py --doctest-modules --junitxml=junit/test-results.xml --cov=integration_test --cov-report=xml --cov-report=html --scoreurl $(az ml service show -g $(ml.resourceGroup) -w $(ml.workspace) -n $(aks_service_name) --query scoringUri -o tsv) --scorekey $(az ml service get-keys -g $(ml.resourceGroup) -w $(ml.workspace) -n $(aks_service_name) --query primaryKey -o tsv)'
+        #workingDirectory: '$(Build.ArtifactStagingDirectory)/tests/smoke'
+        workingDirectory: /home/azureuser/AssistedMLOPSAgent/myagent/_work/r1/a/_Assisted_MLOPS/IRISClassifierArtifacts/a/tests/smoke
+      condition: succeededOrFailed()
+
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results **/TEST-*.xml'
+      
+

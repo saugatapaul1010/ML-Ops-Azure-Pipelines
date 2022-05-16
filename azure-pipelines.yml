@@ -12,7 +12,7 @@ variables:
 - name: ml.region
   value: centralindia
 - name: ml.resourceGroup
-  value: SyntbotsAI-RnD-MLOps
+  value: Saugata-RnD-MLOps
 - name: ml.workspace
   value: MLOps_WS01
 - name: ml.experimentName
